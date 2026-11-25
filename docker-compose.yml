@@ -27,6 +27,9 @@ services:
     build: .
     command: bash start.sh
     restart: unless-stopped
+    environment:
+      TELECLOUD_API_URL: ${TELECLOUD_API_URL:-}
+      TELECLOUD_API_KEY: ${TELECLOUD_API_KEY:-}
     volumes:
       - ./config.py:/usr/src/app/config.py:ro
       - ./accounts:/usr/src/app/accounts

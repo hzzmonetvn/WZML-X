@@ -28,7 +28,19 @@ Bật **Upload API** trong Telecloud và tạo key riêng cho tài khoản mà b
 | `TELECLOUD_PUBLIC_URL` | `config.py`, env hoặc Bot Settings | URL gốc HTTPS để dựng link chia sẻ. Có thể khác URL nội bộ. |
 | `TELECLOUD_UPLOAD_PATH` | `config.py`, env hoặc Bot Settings | Thư mục bên trong tài khoản Telecloud, ví dụ `/WZML`; mặc định `/`. |
 
-Nếu bot chạy trực tiếp trên host cùng Telecloud và Telecloud lắng nghe ở cổng 8091, API URL có thể là `http://127.0.0.1:8091`. **Nếu bot ở container, `127.0.0.1` là chính container**, không phải host. Dùng địa chỉ host mà container tới được; ví dụ `host.docker.internal` nếu môi trường Docker đã cấu hình host gateway. Khai báo hai biến API qua `environment` hoặc `env_file` của service `app`. Chỉ dùng HTTP trên loopback hoặc mạng riêng đáng tin; các trường hợp khác dùng HTTPS. Không cần expose cổng nội bộ ra Internet.
+### Kết nối hai service trên cùng VPS
+
+| WZML chạy ở đâu? | Ví dụ `TELECLOUD_API_URL` khi Telecloud nghe cổng 8091 |
+|---|---|
+| Trực tiếp trên host | `http://127.0.0.1:8091` |
+| Container Podman có host gateway | `http://host.containers.internal:8091` |
+| Container Docker có host gateway | `http://host.docker.internal:8091` |
+
+`127.0.0.1` bên trong container là chính container. Với Docker Engine trên Linux, nếu hostname trên chưa tồn tại, thêm `extra_hosts: ["host.docker.internal:host-gateway"]` vào service `app` bằng override riêng. Telecloud phải lắng nghe trên địa chỉ mà container truy cập được. Không publish cổng Telecloud ra Internet chỉ để hai service liên lạc.
+
+Compose mẫu truyền `TELECLOUD_API_URL` và `TELECLOUD_API_KEY` từ môi trường chạy Compose vào `app`. Nếu dùng `--env-file`, giữ file chứa key **ngoài thư mục build** và đặt quyền `600`; không chạy `docker compose config` ở chế độ in cấu hình khi nạp key (dùng `config --quiet`). `TELECLOUD_PUBLIC_URL` trong `config.py` hoặc Bot Settings chỉ dùng để dựng link cho người tải, không dùng để gửi file. Chỉ dùng HTTP trên loopback hoặc mạng riêng đáng tin.
+
+**Băng thông:** Đường nội bộ bỏ lượt WZML → tunnel → Telecloud, nên file không đi ra Internet ở chặng này. Telecloud vẫn gửi dữ liệu lên Telegram qua mạng ngoài; nguồn tải của WZML hoặc một đích khác như FileCloud24 cũng có thể dùng băng thông ngoài. Tùy cách nhà cung cấp VPS tính phí, đường nội bộ không đồng nghĩa cả tác vụ không phát sinh phí. Chỉ chọn Telecloud trong menu nếu không muốn upload thêm bản tới các host khác.
 
 Bot stream file tới `POST /api/upload-api/upload`, yêu cầu Telecloud xử lý nền, rồi poll task đến khi có token chia sẻ. `TELECLOUD_PUBLIC_URL` dùng để dựng link `/s/<token>`; Bearer key chỉ gửi tới API URL, và adapter không tự theo redirect. Đây là đường upload multipart của Telecloud, **không phải** API session resumable `/api/uploads`: nếu gọi qua một proxy có giới hạn request body, file lớn có thể bị từ chối. Dùng đường nội bộ cho hai service cùng máy. Hủy sau khi nhận được task ID gửi `DELETE` tới Telecloud; nếu chưa có ID hoặc server đã lưu xong, không bảo đảm dọn được file phía server.
 
