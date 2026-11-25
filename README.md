@@ -57,8 +57,8 @@
 | Area | Details |
 |---|---|
 | Runtime | Python Telegram bot + web UI |
-| Deployment | Docker & Docker Compose (buildx) |
-| Required config | `BOT_TOKEN`, `TELEGRAM_API`, `TELEGRAM_HASH`, `OWNER_ID`, `DATABASE_URL` |
+| Deployment | Docker & Docker Compose (this VPS runs rootless Podman; see the runbook) |
+| Required config | `BOT_TOKEN`, `TELEGRAM_API`, `TELEGRAM_HASH`, `OWNER_ID`; `DATABASE_URL` for persistent features |
 | License | [LICENSE](LICENSE) |
 
 ## Why Use It
@@ -69,8 +69,8 @@ WZML-X is built for users who want a single bot stack that can mirror, leech, ma
 
 | Capability | Outcome |
 |---|---|
-| Mirroring | Send files to Telegram with a controllable pipeline |
-| Leeching | Deliver files in the format you prefer, including document and media workflows |
+| Mirroring | Download files and upload them to cloud storage or another supported destination |
+| Leeching | Deliver files to Telegram as documents or media |
 | File selection UI | Review and select torrent / NZB / upload contents before finalizing |
 | Multi-source downloads | Use qBittorrent, Aria2, JDownloader, Mega, NZB, and yt-dlp integrations |
 | Storage and upload paths | Push content to Google Drive, Rclone, Mega, and other supported routes |
@@ -85,7 +85,7 @@ Deploy with Docker and provide the required configuration values. The container 
 
    - Docker installed
    - Your Telegram bot token and Telegram API credentials
-   - A MongoDB connection string
+   - A MongoDB connection string if you want persistent settings or streaming
    - The optional service credentials you want to enable, such as Drive, Rclone, Mega, JDownloader, or SABnzbd
 </details>
 
@@ -94,27 +94,8 @@ Deploy with Docker and provide the required configuration values. The container 
 <details open>
    <summary>VPS / Dedicated Server (Recommended)</summary>
 
-   ```bash
-   git clone https://github.com/SilentDemonSD/WZML-X.git
-   cd WZML-X
-   cp config_sample.py config.py
-   # Edit config.py with your values
-   docker buildx compose up -d
-   ```
-
-   The bot runs behind a Cloudflare quick tunnel by default. Check the tunnel URL:
-
-   ```bash
-   docker compose logs tunnel
-   ```
-
-   You'll see a `https://*.trycloudflare.com` URL — that's your bot's web UI.
-
-   To stop:
-
-   ```bash
-   docker buildx compose down
-   ```
+   Follow the [deployment runbook](docs/operations.md).
+   Build from a clean checkout before creating `config.py` or adding credentials, then start `app` without a rebuild. Start `tunnel` separately only if you want to expose the web UI.
 </details>
 
 <details>
@@ -123,11 +104,7 @@ Deploy with Docker and provide the required configuration values. The container 
    1. Uncomment the `gluetun` service in `docker-compose.yml`
    2. Fill in your VPN provider credentials
    3. Set `network_mode: "service:gluetun"` on the `app` service
-   4. Start:
-
-   ```bash
-   docker buildx compose up -d
-   ```
+   4. Follow the [runbook](docs/operations.md) to build from a clean context and start the services you need.
 
    All traffic (including the cloudflared tunnel) routes through the VPN.
 </details>
@@ -140,24 +117,15 @@ Deploy with Docker and provide the required configuration values. The container 
    1. Create `config2.py` with different `BOT_TOKEN`, `OWNER_ID`, etc.
    2. Uncomment `app2` and `tunnel2` in `docker-compose.yml`
    3. Edit volume mounts to use `config2.py` and separate data dirs
-   4. Start:
+   4. Follow the [runbook](docs/operations.md) to build from a clean context and start the services you need.
 
-   ```bash
-   docker buildx compose up -d
-   ```
-
-   Each bot gets its own cloudflared tunnel URL. Admin ports (qBittorrent, SABnzbd) are mapped to different host ports (`127.0.0.1:8091`, etc.).
+   Give each Quick Tunnel its own `TUNNEL_URL_FILE`. The Compose example does not publish downloader admin ports on the host.
 </details>
 
 <details>
-   <summary>Single Container (Manual)</summary>
+   <summary>Run Without a Tunnel</summary>
 
-   ```bash
-   git clone https://github.com/SilentDemonSD/WZML-X.git
-   cd WZML-X
-   docker build -t wzmlx .
-   docker run -p 8080:8080 wzmlx
-   ```
+   If you do not need a tunnel, start only the `app` service as described in the [runbook](docs/operations.md). The example keeps the web port unpublished by default.
 </details>
 
 <details>
@@ -191,9 +159,8 @@ Start with the required values:
 - `TELEGRAM_API`
 - `TELEGRAM_HASH`
 - `OWNER_ID`
-- `DATABASE_URL`
 
-Then tune the optional behavior from `config_sample.py`.
+Set `DATABASE_URL` if you need persistent settings, unfinished-task recovery, or streaming. See the [configuration precedence notes](docs/operations.md) before overriding values with environment or database settings.
 
 <details>
    <summary>Important user-facing settings</summary>
@@ -206,7 +173,7 @@ Then tune the optional behavior from `config_sample.py`.
    | `LEECH_SPLIT_SIZE` | How large leech outputs are split |
    | `QUEUE_ALL`, `QUEUE_DOWNLOAD`, `QUEUE_UPLOAD` | Queue pressure and concurrency |
    | `SHOW_CLOUD_LINK` | Whether cloud links are shown to users |
-   | `WEB_PINCODE` | Protects web access to file selection |
+   | `WEB_PINCODE` | Shows a separate PIN button instead of putting the PIN in the file-selection URL |
 </details>
 
 <details>
@@ -255,17 +222,15 @@ Then tune the optional behavior from `config_sample.py`.
 | `web/` | FastAPI app, templates, and the file selector UI |
 | `gen_scripts/` | Setup helpers for sessions, tokens, and drive configuration |
 | `plugins/` | Optional bot plugins |
-| `qBittorrent/` | Default qBittorrent configuration |
-| `sabnzbd/` | Default SABnzbd configuration |
+| `configs/qbittorrent/` | Default qBittorrent configuration |
+| `configs/sabnzbd/` | Default SABnzbd configuration |
 
 ## Documentation
 
-> [!NOTE]
-> This documentation is still being expanded.
-
-- Full guides: `docs/`
-- Deployment notes: the docs site linked from the repository at WZ Docs
-- Configuration reference: `config_sample.py`
+- [Architecture (Tiếng Việt)](docs/architecture.md) — startup, task lifecycle, queues, backends, and web services.
+- [Operations runbook (Tiếng Việt)](docs/operations.md) — Compose deployment, configuration, restart, and troubleshooting.
+- [Configuration sample](config_sample.py) and [runtime defaults](bot/core/config_manager.py).
+- [Documentation decisions](DECISIONS.md).
 
 ## Support
 
