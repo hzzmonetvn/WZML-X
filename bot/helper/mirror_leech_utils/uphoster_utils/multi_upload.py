@@ -17,6 +17,8 @@ from bot.helper.mirror_leech_utils.uphoster_utils.uploaders_utils.pixeldrain_upl
     PixelDrainUpload,
 )
 
+from .api_uploaders import FileCloud24Upload, TelecloudUpload
+
 LOGGER = getLogger(__name__)
 
 SERVICE_MAP = {
@@ -25,6 +27,8 @@ SERVICE_MAP = {
     "pixeldrain": PixelDrainUpload,
     "devuploads": DevUploadsUpload,
     "vikingfile": VikingFileUpload,
+    "filecloud24": FileCloud24Upload,
+    "telecloud": TelecloudUpload,
 }
 
 

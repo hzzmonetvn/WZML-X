@@ -37,6 +37,8 @@ from ..helper.ext_utils.status_utils import (
     get_readable_file_size,
     get_readable_time,
 )
+from ..helper.mirror_leech_utils.uphoster_utils.api_uploaders import validate_api_uphoster
+from ..helper.mirror_leech_utils.uphoster_utils.multi_upload import SERVICE_MAP
 from ..helper.telegram_helper.bot_commands import BotCommands
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.prompt import STOP, ask_in_pm
@@ -2140,7 +2142,6 @@ async def edit_user_settings(client, query):
                 await query.answer(f"Failed: {e}"[:180], show_alert=True)
         await update_user_settings(query, "seedr")
     elif data[2] == "uphoster_destinations":
-        await query.answer()
         user_dict = user_data.get(user_id, {})
         uphoster_service = user_dict.get("UPHOSTER_SERVICE", "gofile")
         selected_services = uphoster_service.split(",") if uphoster_service else []
@@ -2154,7 +2155,16 @@ async def edit_user_settings(client, query):
                     await query.answer(
                         "At least one destination must be selected!", show_alert=True
                     )
+                    return
             else:
+                if service not in SERVICE_MAP:
+                    await query.answer("Unknown upload destination!", show_alert=True)
+                    return
+                try:
+                    validate_api_uphoster(service)
+                except ValueError as err:
+                    await query.answer(str(err), show_alert=True)
+                    return
                 selected_services.append(service)
             new_services = ",".join(selected_services)
             update_user_ldata(user_id, "UPHOSTER_SERVICE", new_services)
@@ -2165,14 +2175,14 @@ async def edit_user_settings(client, query):
                 uphoster_service.split(",") if uphoster_service else ["gofile"]
             )
 
+        await query.answer()
         buttons = ButtonMaker()
-        for service in [
-            "gofile",
-            "buzzheavier",
-            "pixeldrain",
-            "devuploads",
-            "vikingfile",
-        ]:
+        for service in SERVICE_MAP:
+            if service not in selected_services:
+                try:
+                    validate_api_uphoster(service)
+                except ValueError:
+                    continue
             state = "✓" if service in selected_services else ""
             buttons.data_button(
                 f"{service.capitalize()} {state}",

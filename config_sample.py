@@ -57,6 +57,13 @@ DISABLE_STREAM = False
 DISABLE_YTDLP = False
 DISABLE_PLUGINS = False
 
+# Optional /uphoster API destinations
+FILECLOUD24_ENABLED = False
+TELECLOUD_PUBLIC_URL = ""  # Public HTTPS base URL for share links
+TELECLOUD_UPLOAD_PATH = "/"
+# Set TELECLOUD_API_URL (internal base URL without /api/upload-api) and
+# TELECLOUD_API_KEY together in the app process environment.
+
 # Plugins
 PLUGIN_INDEXES = []
 

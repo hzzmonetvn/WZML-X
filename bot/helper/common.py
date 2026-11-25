@@ -65,6 +65,7 @@ from .mirror_leech_utils.gdrive_utils.list import GoogleDriveList
 from .mirror_leech_utils.rclone_utils.list import RcloneList
 from .mirror_leech_utils.status_utils.ffmpeg_status import FFmpegStatus
 from .mirror_leech_utils.status_utils.sevenz_status import SevenZStatus
+from .mirror_leech_utils.uphoster_utils.api_uploaders import validate_api_uphoster
 from .telegram_helper.message_utils import (
     get_tg_link_message,
     open_category_btns,
@@ -490,6 +491,10 @@ class TaskConfig:
                             ):
                                 raise ValueError("No PixelDrain Key Found!")
                     self.up_dest = "Uphoster"
+
+            if self.is_uphoster:
+                for service in self.user_dict.get("UPHOSTER_SERVICE", "gofile").split(","):
+                    validate_api_uphoster(service)
 
             if not self.up_dest:
                 raise ValueError("No Upload Destination!")

@@ -59,6 +59,9 @@ class Config:
     DEVUPLOADS_FOLDER = ""
     VIKINGFILE_HASH = ""
     VIKINGFILE_FOLDER = ""
+    FILECLOUD24_ENABLED = False
+    TELECLOUD_PUBLIC_URL = ""
+    TELECLOUD_UPLOAD_PATH = "/"
     GDRIVE_ID = ""
     GD_DESP = "Uploaded with WZ Bot"
     AUTHOR_NAME = "WZML-X"
