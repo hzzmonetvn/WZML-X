@@ -16,6 +16,7 @@ from mimetypes import guess_extension
 from pathlib import Path
 from re import sub
 from sys import argv
+from tempfile import mkstemp
 
 from aiofiles.os import makedirs
 from pyrogram import StopTransmission, raw
@@ -43,6 +44,10 @@ from ..telegram_helper.tg_transfer import MB, HypertgTransfer, media_of
 from .bot_utils import parse_dest
 
 _load_lock = Lock()
+
+
+class _ChunkWriteError(OSError):
+    pass
 
 
 async def _pick_clients(wl, clients, count):
@@ -257,15 +262,14 @@ class HypertgDownload(HypertgTransfer):
         cname = self.clients[idx].me.username
         sess = await self._get_session(idx, fid.dc_id)
         loc = location
-        first_off = start - (start % csz)
-        first_trim = start - first_off
+        # The caller and retry queue use chunk-aligned starting offsets.
         last_byte = end - 1
         window = self.pipeline_depth
         min_win = self._MIN_PIPELINE
         max_win = window * self._MAX_PIPELINE_MULT
         inflight = set()
         _inflight_offsets = {}
-        cur = first_off
+        cur = start
         seq = 0
         ok_count = 0
         flood_count = 0
@@ -290,23 +294,15 @@ class HypertgDownload(HypertgTransfer):
 
         async def _write(roff, chunk):
             try:
-                await _write_body(roff, chunk)
+                await self._pwrite(fd, chunk, roff)
+                self._obj._processed_bytes += len(chunk)
+            except OSError as e:
+                raise _ChunkWriteError(f"Write failed at offset {roff}: {e}") from e
             finally:
                 await _drop()
 
-        async def _write_body(roff, chunk):
-            if roff == first_off and roff + csz >= end:
-                chunk = chunk[first_trim : last_byte - roff + 1]
-                await self._pwrite(fd, chunk, start)
-            elif roff == first_off:
-                chunk = chunk[first_trim:]
-                await self._pwrite(fd, chunk, start)
-            elif roff + csz > end:
-                chunk = chunk[: end - roff]
-                await self._pwrite(fd, chunk, roff)
-            else:
-                await self._pwrite(fd, chunk, roff)
-            self._obj._processed_bytes += len(chunk)
+        def _is_complete_chunk(roff, chunk):
+            return len(chunk) == min(csz, self.file_size - roff)
 
         async def _req(off, s):
             nonlocal \
@@ -397,15 +393,12 @@ class HypertgDownload(HypertgTransfer):
 
         write_tasks = set()
         failed_offsets = set()
-        write_errors = 0
         max_writes = max(max_win, min_win)
 
         def _reap_writes():
-            nonlocal write_errors
             for t in [t for t in write_tasks if t.done()]:
                 write_tasks.discard(t)
-                if not t.cancelled() and t.exception() is not None:
-                    write_errors += 1
+                t.result()
 
         async def _queue_write(roff, chunk):
             write_tasks.add(create_task(_write(roff, chunk)))
@@ -418,24 +411,24 @@ class HypertgDownload(HypertgTransfer):
             while cur <= last_byte or inflight:
                 if bot_down:
                     while inflight:
-                        done_set, inflight = await wait(
-                            inflight, return_when=FIRST_COMPLETED
-                        )
+                        done_set, _ = await wait(inflight, return_when=FIRST_COMPLETED)
                         for f in done_set:
+                            inflight.remove(f)
                             known = _inflight_offsets.pop(f, None)
                             try:
                                 s, roff, chunk = f.result()
-                                if not chunk:
-                                    failed_offsets.add(roff)
-                                    await _drop()
-                                    continue
-                                await _queue_write(roff, chunk)
                             except CancelledError:
                                 raise
                             except Exception:
                                 await _drop()
                                 if known is not None:
                                     failed_offsets.add(known)
+                                continue
+                            if not _is_complete_chunk(roff, chunk):
+                                failed_offsets.add(roff)
+                                await _drop()
+                                continue
+                            await _queue_write(roff, chunk)
                     c = cur
                     while c <= last_byte:
                         failed_offsets.add(c)
@@ -452,11 +445,12 @@ class HypertgDownload(HypertgTransfer):
                     seq += 1
                 if not inflight:
                     break
-                done_set, inflight = await wait(inflight, return_when=FIRST_COMPLETED)
+                done_set, _ = await wait(inflight, return_when=FIRST_COMPLETED)
                 for f in done_set:
+                    inflight.remove(f)
                     _inflight_offsets.pop(f, None)
                     s, roff, chunk = f.result()
-                    if not chunk:
+                    if not _is_complete_chunk(roff, chunk):
                         failed_offsets.add(roff)
                         await _drop()
                         continue
@@ -474,44 +468,36 @@ class HypertgDownload(HypertgTransfer):
             LOGGER.error(f"HypertgDL pipeline fail client={cname}: {e}")
             raise
         finally:
-            cancelled = 0
             for f in inflight:
-                if not f.done():
-                    f.cancel()
-                    cancelled += 1
-            inflight.clear()
-            _inflight_offsets.clear()
-            if cancelled:
-                await _drop(cancelled)
+                f.cancel()
+            if inflight:
+                await gather(*inflight, return_exceptions=True)
+            write_results = []
             if write_tasks:
                 write_results = await gather(*write_tasks, return_exceptions=True)
-                write_errors += sum(
-                    1 for r in write_results if isinstance(r, BaseException)
-                )
-                write_tasks.clear()
             if held:
                 await _drop(held)
-            if write_errors:
-                LOGGER.warning(
-                    f"HypertgDL {write_errors} write tasks failed client={cname}"
-                )
+        for result in write_results:
+            if isinstance(result, BaseException):
+                raise result
         return failed_offsets
 
     async def _part(self, start, end, final_path, ci, fid, csz):
         cname = self.clients[ci].me.username
-        fd = await to_thread(os.open, final_path, os.O_WRONLY)
+        fd = os.open(final_path, os.O_WRONLY)
         try:
             failed_offsets = await self._pipeline_fetch(
                 ci, self._location(fid), start, end, fid, csz, fd
             )
+        except _ChunkWriteError:
+            raise
         except Exception as e:
-            first_off = start - (start % csz)
-            failed_offsets = set(range(first_off, end, csz))
+            failed_offsets = set(range(start, end, csz))
             LOGGER.error(f"HypertgDL part fail ci={ci} client={cname}: {e}")
             e.failed_offsets = failed_offsets
             raise
         finally:
-            await to_thread(os.close, fd)
+            os.close(fd)
         return failed_offsets
 
     @staticmethod
@@ -541,6 +527,8 @@ class HypertgDownload(HypertgTransfer):
         while all_failed_offsets:
             retry_round += 1
             await sleep(1)
+            if self._cancel.is_set():
+                raise CancelledError
 
             good_bots = sorted(
                 [i for i in pool if i not in bad_bots],
@@ -606,26 +594,24 @@ class HypertgDownload(HypertgTransfer):
                         continue
                 retry_start = min(bucket)
                 retry_end = min(max(bucket) + self.chunk_size, self.file_size)
-                task = create_task(
-                    self._part(
-                        retry_start,
-                        retry_end,
-                        final,
-                        bot_idx,
-                        fid_map[bot_idx],
-                        self.chunk_size,
-                    )
-                )
-                bot_task_map.append((bot_idx, bucket, task))
+                bot_task_map.append((bot_idx, bucket, retry_start, retry_end))
 
             if not bot_task_map:
                 LOGGER.error("HypertgDL retry: no bots available for retry")
                 break
 
-            retry_results = await gather(
-                *[t for _, _, t in bot_task_map], return_exceptions=True
-            )
-            for (bot_idx, bucket, _), r in zip(bot_task_map, retry_results):
+            if self._cancel.is_set():
+                raise CancelledError
+            self._tasks = [
+                create_task(
+                    self._part(start, end, final, idx, fid_map[idx], self.chunk_size)
+                )
+                for idx, _, start, end in bot_task_map
+            ]
+            retry_results = await gather(*self._tasks, return_exceptions=True)
+            for (bot_idx, bucket, _, _), r in zip(bot_task_map, retry_results):
+                if isinstance(r, (CancelledError, _ChunkWriteError)):
+                    raise r
                 if isinstance(r, BaseException):
                     LOGGER.error(
                         f"HypertgDL retry ci={bot_idx} "
@@ -688,19 +674,23 @@ class HypertgDownload(HypertgTransfer):
             cidx = await _pick_clients(self.work_loads, use_clients, use_count)
 
         n_use = len(cidx)
-        min_part = 1 * MB
-        n_parts = (
-            min(n_use, max(1, self.file_size // min_part))
-            if self.file_size >= min_part
-            else 1
-        )
-        psz = self.file_size // n_parts if n_parts > 0 else self.file_size
-        ranges = [(i * psz, min((i + 1) * psz, self.file_size)) for i in range(n_parts)]
+        csz = self.chunk_size
+        chunks = (self.file_size + csz - 1) // csz
+        n_parts = min(n_use, max(1, self.file_size // MB), max(1, chunks))
+        # Align the ranges so that each offset, including retries, has one owner.
+        ranges = [
+            (
+                i * chunks // n_parts * csz,
+                min((i + 1) * chunks // n_parts * csz, self.file_size),
+            )
+            for i in range(n_parts)
+        ]
         assigns = [cidx[i % n_use] for i in range(n_parts)]
 
         unique_clients = set(assigns)
         fid_map = {}
         self._tasks = []
+        staging = None
         try:
             for ci in unique_clients:
                 fid_map[ci] = await self._fetch_ref(ci, self.clients[ci])
@@ -711,11 +701,11 @@ class HypertgDownload(HypertgTransfer):
             except Exception as e:
                 LOGGER.warning(f"HypertgDL warmup err: {e}")
 
-            fd = await to_thread(os.open, final, os.O_WRONLY | os.O_CREAT)
+            fd, staging = mkstemp(dir=os.path.dirname(final), prefix=".hyperdl-")
             try:
-                await to_thread(os.ftruncate, fd, self.file_size)
+                os.ftruncate(fd, self.file_size)
             finally:
-                await to_thread(os.close, fd)
+                os.close(fd)
 
             all_failed_offsets = set()
             for i, (s, e) in enumerate(ranges):
@@ -724,7 +714,7 @@ class HypertgDownload(HypertgTransfer):
                         self._part(
                             s,
                             e,
-                            final,
+                            staging,
                             assigns[i],
                             fid_map[assigns[i]],
                             self.chunk_size,
@@ -735,6 +725,8 @@ class HypertgDownload(HypertgTransfer):
             results = await gather(*self._tasks, return_exceptions=True)
             bad_bots = set()
             for i, r in enumerate(results):
+                if isinstance(r, (CancelledError, _ChunkWriteError)):
+                    raise r
                 if isinstance(r, BaseException):
                     LOGGER.error(f"HypertgDL part {i} failed: {r}")
                     bad_bots.add(assigns[i])
@@ -756,10 +748,18 @@ class HypertgDownload(HypertgTransfer):
                 ranges,
                 assigns,
                 fid_map,
-                final,
+                staging,
                 cidx=cidx,
             )
 
+            if self._cancel.is_set():
+                raise CancelledError
+            if all_failed_offsets:
+                raise OSError(
+                    f"Incomplete Telegram download: {len(all_failed_offsets)} missing chunks"
+                )
+            os.replace(staging, final)
+            staging = None
             return final
         except FloodWait:
             raise
@@ -775,6 +775,13 @@ class HypertgDownload(HypertgTransfer):
                     t.cancel()
             if self._tasks:
                 await gather(*self._tasks, return_exceptions=True)
+            if staging is not None:
+                try:
+                    os.unlink(staging)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    LOGGER.warning(f"HypertgDL temporary file cleanup failed: {e}")
             async with _load_lock:
                 for k in cidx:
                     self.work_loads[k] = max(0, self.work_loads.get(k, 0) - 1)
